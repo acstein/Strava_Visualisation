@@ -44,10 +44,10 @@ def fetch_strava_activities(header, after: int | None = None) -> pd.DataFrame:
     all_data = []
     page = 1
 
-    while True:
+    while True: # fetch activities using HTTP requests library
         params = {'per_page': 200, 'page': page}
         if after:
-            params['after'] = after # only get newer activities
+            params['after'] = after # only get newer activities if after is specified
 
         response = requests.get(activities_url, headers=header, params=params).json()
         if not response:
@@ -55,23 +55,26 @@ def fetch_strava_activities(header, after: int | None = None) -> pd.DataFrame:
         all_data.extend(response)
         page += 1
 
-        # Filter for runs only
-    run_data = [a for a in all_data if a['type'] == 'Run']
+    # Filter for runs recorded on Garmin only
+    run_data = [a for a in all_data if a['type'] == 'Run' and a['has_heartrate']] 
     if not run_data:
         return pd.DataFrame()
 
-    df = json_normalize(run_data)
-    df['Distance_km'] = df['distance'] / 1000
-    df['Time_min'] = df['elapsed_time'] / 60
-    df['Avg_Heartrate'] = df['average_heartrate'].fillna(0)
-    df['Elevation_m'] = df['total_elevation_gain'].fillna(0)
-    df['Avg_Speed'] = df['average_speed']
-    df['Max_Speed'] = df['max_speed']
-    df['Start_Date'] = pd.to_datetime(df['start_date'])
-    df['Activity_ID'] = df['id']
+    df = json_normalize(run_data) # turn from json format into a dataframe
+    clean_df = pd.DataFrame()
+    clean_df['Distance_km'] = df['distance'] / 1000
+    clean_df['Time_min'] = df['elapsed_time'] / 60 
+    clean_df['Avg_Heartrate'] = df['average_heartrate'].fillna(0)
+    clean_df['Max_Heartrate'] = df['max_heartrate']
+    clean_df['Elevation_m'] = df['total_elevation_gain'].fillna(0)
+    clean_df['Avg_Pace'] = pd.to_timedelta(16.666666667 * 60 / df['average_speed'], unit="s") # convert to pace
+    clean_df["Avg_Pace_Readable"] = clean_df["Avg_Pace"].apply(lambda td: str(td).split(".")[0].replace("0 days ", ""))
+    clean_df['Max_Pace'] = pd.to_timedelta(16.666666667 * 60 / df['max_speed'], unit="s")
+    clean_df["Max_Pace_Readable"] = clean_df["Max_Pace"].apply(lambda td: str(td).split(".")[0].replace("0 days ", ""))
+    clean_df['Start_Date'] = pd.to_datetime(df['start_date']).dt.strftime("%d-%m-%Y %H:%M")
+    clean_df['Activity_ID'] = df['id']
 
-    return df[['Activity_ID', 'Start_Date', 'Distance_km', 'Time_min',
-    'Avg_Heartrate', 'Elevation_m', 'Avg_Speed', 'Max_Speed']]
+    return clean_df
 
 # ===============================
 # DATABASE FUNCTIONS
@@ -80,29 +83,43 @@ def fetch_strava_activities(header, after: int | None = None) -> pd.DataFrame:
 DB_FILE = "strava_runs.db"
 
 def init_db():
+    """
+    Connect to the database and create a runs table if not already present
+    """
     conn = sqlite3.connect(DB_FILE)
     conn.execute('''
     CREATE TABLE IF NOT EXISTS runs (
-    Activity_ID INTEGER PRIMARY KEY,
+    Activity_ID INTEGER KEY,
     Start_Date TEXT,
     Distance_km REAL,
     Time_min REAL,
     Avg_Heartrate REAL,
+    Max_Heartrate REAL,
     Elevation_m REAL,
     Avg_Speed REAL,
-    Max_Speed REAL
+    Max_Speed REAL,
+    Avg_Pace TEXT,
+    Avg_Pace_Readable TEXT,
+    Max_Pace TEXT,
+    Max_Pace_Readable TEXT
     )
     ''')
     conn.commit()
     conn.close()
 
 def get_latest_activity_date() -> datetime | None:
+    """
+    Get the date of the latest run in the database
+    """
     conn = sqlite3.connect(DB_FILE)
     result = conn.execute("SELECT MAX(Start_Date) FROM runs").fetchone()[0]
     conn.close()
     return datetime.fromisoformat(result) if result else None
 
 def save_to_db(df: pd.DataFrame):
+    """
+    Save any new runs found to the table in the database
+    """
     if df.empty:
         print("No new runs to add.")
         return
@@ -135,7 +152,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# Expose a clear API when imported
+# Expose a clear API when imported and reduce namespace clutter
 __all__ = [
 'get_access_token', 'fetch_strava_activities', 'init_db',
 'get_latest_activity_date', 'save_to_db', 'DB_FILE'

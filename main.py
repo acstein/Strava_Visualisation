@@ -27,32 +27,41 @@ class RunRecord:
     distance_km: float
     time_min: float
     avg_heartrate: float
+    max_heartrate: float
     elevation_m: float
-    avg_speed: float
+    avg_pace_readable: str
+    max_pace_readable: str
 
 
     def summary_text(self) -> str:
-        """Create a compact text representation of the run that will be embedded.
-        This includes numeric values turned into human-readable text so the embedding model
-        picks up on them naturally.
         """
-        pace_s_per_km = (self.time_min * 60) / max(self.distance_km, 1e-6)
-        return (
+        Create a compact text representation of the run that will be embedded.
+        This includes numeric values turned into human-readable text so the embedding model
+        picks up on them.
+        """
+
+        summary_string =  (
         f"Date: {self.start_date.date()}. "
         f"Distance: {self.distance_km:.1f} km. "
         f"Time: {self.time_min:.1f} min. "
-        f"Pace: {pace_s_per_km:.1f} s/km. "
-        f"Avg HR: {self.avg_heartrate:.0f}. "
-        f"Elevation gain: {self.elevation_m:.0f} m."
+        f"Average Heart Rate: {self.avg_heartrate:.0f} bpm."
+        f"Maximum Heart Rate: {self.max_heartrate:.0f} bpm."
+        f"Elevation Gain: {self.elevation_m:.0f} m."
+        f"Average Pace: {self.avg_pace_readable} min/km."
+        f"Maximum Pace: {self.max_pace_readable} min/km."
         )
 
+        return summary_string
+    
 # -----------------------
 # Step 1: Read runs from your local DB
 # -----------------------
 
 def read_runs_from_db(limit: int = 100) -> List[RunRecord]:
-    """Read the most recent runs from the SQLite DB created by strava_db.py.
+    """
+    Read the most recent runs from the SQLite DB created by strava_db.py.
     Returns a list of RunRecord sorted newest first.
+    Only loads returns the limit number of records.
     """
     conn = sqlite3.connect(strava_db.DB_FILE)
     df = pd.read_sql_query('SELECT * FROM runs ORDER BY Start_Date DESC LIMIT ?', conn, params=(limit,))
@@ -60,15 +69,19 @@ def read_runs_from_db(limit: int = 100) -> List[RunRecord]:
 
     runs: List[RunRecord] = []
     for _, r in df.iterrows():
-        runs.append(RunRecord(
-        activity_id=int(r['Activity_ID']),
-        start_date=pd.to_datetime(r['Start_Date']),
-        distance_km=float(r['Distance_km']),
-        time_min=float(r['Time_min']),
-        avg_heartrate=float(r['Avg_Heartrate']),
-        elevation_m=float(r['Elevation_m']),
-        avg_speed=float(r['Avg_Speed']) if 'Avg_Speed' in r else 0.0
-        ))
+        runs.append(
+            RunRecord(
+            activity_id=int(r['Activity_ID']),
+            start_date=pd.to_datetime(r['Start_Date']),
+            distance_km=float(r['Distance_km']),
+            time_min=float(r['Time_min']),
+            avg_heartrate=float(r['Avg_Heartrate']),
+            max_heartrate=float(r['Max_Heartrate']),
+            elevation_m=float(r['Elevation_m']),
+            avg_pace_readable=str(r['Avg_Pace_Readable']) if 'Avg_Pace_Readable' in r else 0.0,
+            max_pace_readable=str(r['Max_Pace_Readable']) if 'Max_Pace_Readable' in r else 0.0
+            )
+        )
     return runs
 
 # -----------------------
@@ -128,7 +141,10 @@ def build_store_from_runs(runs: List[RunRecord]) -> SimpleVectorStore:
             'distance_km': r.distance_km,
             'time_min': r.time_min,
             'avg_heartrate': r.avg_heartrate,
-            'elevation_m': r.elevation_m
+            'max_heartrate': r.max_heartrate,
+            'elevation_m': r.elevation_m,
+            'average_pace': r.avg_pace_readable,
+            'max_pace': r.max_pace_readable
         }
         for r in runs
     ]
@@ -179,7 +195,7 @@ def streamlit_app():
             'distance_km': r.distance_km,
             'time_min': r.time_min,
             'avg_hr': r.avg_heartrate,
-            'elevation_m': r.elevation_m
+            'avg_pace': r.avg_pace_readable
         }
     for r in runs
     ])
@@ -188,21 +204,21 @@ def streamlit_app():
 
     with tabs[0]:
         st.header('Dashboard')
-        st.dataframe(df[['date','distance_km','time_min','avg_hr']])
-        df['pace_s_per_km'] = (df['time_min'] * 60) / df['distance_km']
+        st.dataframe(df[['date','distance_km','time_min','avg_hr', 'avg_pace']])
         fig, ax = plt.subplots()
-        ax.plot(pd.to_datetime(df['date']), df['pace_s_per_km'], marker='o')
-        ax.set_ylabel('s per km')
-        ax.set_title('Pace over time')
+        ax.scatter(pd.to_datetime(df['date']), df['avg_hr'])
+        ax.set_ylabel('Average Heartrate')
+        ax.set_title('Heartrate over time')
         st.pyplot(fig)
 
 
     with tabs[1]:
         st.header('Chat with RunSage')
         user_q = st.text_input('Ask about your training', value='Summarise my last 2 weeks of training')
+        number_runs = st.number_input('Number of runs to use as context', value=10, placeholder='Type a number...')
         if st.button('Ask'):
             # Provide recent runs as context to the LLM
-            recent = runs[:10]
+            recent = runs[:number_runs]
             context = ''.join([r.summary_text() for r in recent])
             system_prompt = 'You are an experienced running coach. Give concise, practical feedback.'
             user_prompt = f"Here are recent runs: {context}. Question: {user_q}"
