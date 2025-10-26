@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Any
+import plotly.graph_objects as go
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 import numpy as np
 import pandas as pd
@@ -29,8 +31,9 @@ class RunRecord:
     avg_heartrate: float
     max_heartrate: float
     elevation_m: float
-    avg_pace_readable: str
-    max_pace_readable: str
+    avg_speed: float
+    avg_pace: str
+    max_pace: str
 
 
     def summary_text(self) -> str:
@@ -47,8 +50,8 @@ class RunRecord:
         f"Average Heart Rate: {self.avg_heartrate:.0f} bpm."
         f"Maximum Heart Rate: {self.max_heartrate:.0f} bpm."
         f"Elevation Gain: {self.elevation_m:.0f} m."
-        f"Average Pace: {self.avg_pace_readable} min/km."
-        f"Maximum Pace: {self.max_pace_readable} min/km."
+        f"Average Pace: {self.avg_pace} min/km."
+        f"Maximum Pace: {self.max_pace} min/km."
         )
 
         return summary_string
@@ -72,14 +75,15 @@ def read_runs_from_db(limit: int = 100) -> List[RunRecord]:
         runs.append(
             RunRecord(
             activity_id=int(r['Activity_ID']),
-            start_date=pd.to_datetime(r['Start_Date']),
+            start_date=pd.to_datetime(r['Start_Date'], dayfirst=True),
             distance_km=float(r['Distance_km']),
             time_min=float(r['Time_min']),
             avg_heartrate=float(r['Avg_Heartrate']),
             max_heartrate=float(r['Max_Heartrate']),
             elevation_m=float(r['Elevation_m']),
-            avg_pace_readable=str(r['Avg_Pace_Readable']) if 'Avg_Pace_Readable' in r else 0.0,
-            max_pace_readable=str(r['Max_Pace_Readable']) if 'Max_Pace_Readable' in r else 0.0
+            avg_speed=float(r['Avg_Speed']) if 'Avg_Speed' else 0.0,
+            avg_pace=str(r['Avg_Pace']) if 'Avg_Pace' in r else 0.0,
+            max_pace=str(r['Max_Pace']) if 'Max_Pace' in r else 0.0
             )
         )
     return runs
@@ -143,8 +147,8 @@ def build_store_from_runs(runs: List[RunRecord]) -> SimpleVectorStore:
             'avg_heartrate': r.avg_heartrate,
             'max_heartrate': r.max_heartrate,
             'elevation_m': r.elevation_m,
-            'average_pace': r.avg_pace_readable,
-            'max_pace': r.max_pace_readable
+            'average_pace': r.avg_pace,
+            'max_pace': r.max_pace
         }
         for r in runs
     ]
@@ -177,8 +181,8 @@ def llm_query(system_prompt: str, user_prompt: str, model: str = 'gpt-4o-mini') 
 # -----------------------
 
 def streamlit_app():
-    st.set_page_config(page_title='RunSage — Simple LLM running coach')
-    st.title('RunSage — Simple LLM running coach')
+    st.set_page_config(page_title='RunBot — Simple LLM running coach')
+    st.title('RunBot — LLM running coach')
 
 
     # Read runs from DB
@@ -195,7 +199,8 @@ def streamlit_app():
             'distance_km': r.distance_km,
             'time_min': r.time_min,
             'avg_hr': r.avg_heartrate,
-            'avg_pace': r.avg_pace_readable
+            'avg_pace': r.avg_pace,
+            'avg_speed': r.avg_speed
         }
     for r in runs
     ])
@@ -203,17 +208,59 @@ def streamlit_app():
     tabs = st.tabs(['Dashboard', 'Chat', 'Semantic Search'])
 
     with tabs[0]:
-        st.header('Dashboard')
-        st.dataframe(df[['date','distance_km','time_min','avg_hr', 'avg_pace']])
-        fig, ax = plt.subplots()
-        ax.scatter(pd.to_datetime(df['date']), df['avg_hr'])
-        ax.set_ylabel('Average Heartrate')
-        ax.set_title('Heartrate over time')
-        st.pyplot(fig)
+        st.dataframe(df[['date', 'distance_km', 'time_min', 'avg_hr', 'avg_pace', 'avg_speed']])
 
+        # Calculate Running Economy Index (REI)
+        df['REI'] = (df['avg_speed'] * df['distance_km']) / df['avg_hr']
+        df = df.sort_values('date')
+
+        # LOWESS smoothing for trendline
+        smoothed = lowess(df['REI'], df['date'], frac=0.3)
+        trend_dates = [pd.to_datetime(x) for x in smoothed[:, 0]]
+        trend_values = smoothed[:, 1]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df['date'],
+            y=df['REI'],
+            mode='markers',
+            name='Runs',
+            marker=dict(size=7, color='royalblue', opacity=0.7),
+            hovertemplate=(
+                '<b>Date:</b> %{x|%b %d, %Y}<br>'
+                '<b>REI:</b> %{y:.4f}<br>'
+                '<b>Avg HR:</b> %{customdata[0]} bpm<br>'
+                '<b>Speed:</b> %{customdata[1]:.2f} km/h<extra></extra>'
+            ),
+            customdata=df[['avg_hr', 'avg_speed']].values
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=trend_dates,
+            y=trend_values,
+            mode='lines',
+            name='Trend',
+            line=dict(color='crimson', width=3)
+        ))
+
+        fig.update_layout(
+            title='Running Economy Over Time',
+            xaxis_title='Date',
+            yaxis_title='Running Economy (Speed / HR)',
+            template='plotly_white',
+            #hovermode='x unified',
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(l=40, r=20, t=60, b=40)
+        )
+
+        # Make date axis scale nicely
+        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgrey')
+        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor='lightgrey')
+
+        st.plotly_chart(fig, use_container_width=True)
 
     with tabs[1]:
-        st.header('Chat with RunSage')
+        st.header('Chat with RunBot')
         user_q = st.text_input('Ask about your training', value='Summarise my last 2 weeks of training')
         number_runs = st.number_input('Number of runs to use as context', value=10, placeholder='Type a number...')
         if st.button('Ask'):
@@ -239,3 +286,7 @@ def streamlit_app():
 
 if __name__ == '__main__':
     streamlit_app()
+
+#TODO Fix dates issue, LLM thinks its the wrong date and/or runs not sorted by date correctly
+#TODO Understand all LLM aspects
+#TODO Train a ML model on run data to see trend over time
