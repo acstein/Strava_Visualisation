@@ -93,7 +93,8 @@ def read_runs_from_db(limit: int = 100) -> List[RunRecord]:
 # -----------------------
 
 def make_text_embedding(text: str, model: str = 'text-embedding-3-small') -> np.ndarray:
-    """Send text to OpenAI embeddings endpoint and return numpy vector.
+    """
+    Send text to OpenAI embeddings endpoint and return numpy vector.
     Keep it simple with requests; the official SDK works too.
     """
     assert OPENAI_API_KEY, "OPENAI_API_KEY not set in .env"
@@ -211,6 +212,7 @@ def streamlit_app():
         st.dataframe(df[['date', 'distance_km', 'time_min', 'avg_hr', 'avg_pace', 'avg_speed']])
 
         # Calculate Running Economy Index (REI)
+        #df['REI'] = df['avg_speed'] / df['avg_hr']
         df['REI'] = (df['avg_speed'] * df['distance_km']) / df['avg_hr']
         df = df.sort_values('date')
 
@@ -246,7 +248,7 @@ def streamlit_app():
         fig.update_layout(
             title='Running Economy Over Time',
             xaxis_title='Date',
-            yaxis_title='Running Economy (Speed / HR)',
+            yaxis_title='Running Economy / (Speed / HeartRate) * Distance',
             template='plotly_white',
             #hovermode='x unified',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
@@ -290,3 +292,4 @@ if __name__ == '__main__':
 #TODO Fix dates issue, LLM thinks its the wrong date and/or runs not sorted by date correctly
 #TODO Understand all LLM aspects
 #TODO Train a ML model on run data to see trend over time
+#TODO footnote with HR
